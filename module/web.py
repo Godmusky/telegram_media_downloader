@@ -3,6 +3,7 @@
 import logging
 import os
 import threading
+from typing import List
 
 from flask import Flask, jsonify, render_template, request
 from flask_login import LoginManager, UserMixin, login_required, login_user
@@ -58,6 +59,47 @@ def load_user(_):
 def get_flask_app() -> Flask:
     """get flask app instance"""
     return _flask_app
+
+
+def _get_bot_instance():
+    from module.bot import _bot  # pylint: disable=C0415
+
+    return _bot
+
+
+def _safe_int(value: str, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _build_task_list() -> List[dict]:
+    bot = _get_bot_instance()
+    tasks = []
+    for task_id, node in bot.task_node.items():
+        total = node.total_download_task
+        success = node.success_download_task
+        failed = node.failed_download_task
+        skipped = node.skip_download_task
+        if str(node.task_type.name) in {"Forward", "ListenForward"}:
+            total = node.total_forward_task
+            success = node.success_forward_task
+            failed = node.failed_forward_task
+            skipped = node.skip_forward_task
+        tasks.append(
+            {
+                "task_id": task_id,
+                "task_type": str(node.task_type.name),
+                "chat_id": str(node.chat_id),
+                "running": bool(node.is_running and not node.is_finish()),
+                "total": total,
+                "success": success,
+                "failed": failed,
+                "skipped": skipped,
+            }
+        )
+    return tasks
 
 
 def run_web_server(app: Application):
@@ -188,8 +230,8 @@ def get_download_list():
 
     download_result = get_download_result()
     result = "["
-    for chat_id, messages in download_result.items():
-        for idx, value in messages.items():
+    for chat_id, messages in list(download_result.items()):
+        for idx, value in list(messages.items()):
             is_already_down = value["down_byte"] == value["total_size"]
 
             if already_down and not is_already_down:
@@ -220,3 +262,97 @@ def get_download_list():
 
     result += "]"
     return result
+
+
+@_flask_app.route("/bot/tasks")
+@login_required
+def bot_tasks():
+    """Get bot task list"""
+    return jsonify({"code": 0, "data": _build_task_list()})
+
+
+@_flask_app.route("/bot/stop", methods=["POST"])
+@login_required
+def bot_stop_task():
+    """Stop bot task"""
+    task_id = request.args.get("task_id", "all")
+    bot = _get_bot_instance()
+    bot.stop_task(task_id)
+    return jsonify({"code": 0, "message": "ok"})
+
+
+@_flask_app.route("/bot/download", methods=["POST"])
+@login_required
+def bot_download_task():
+    """Create download task from web"""
+    bot = _get_bot_instance()
+    if not bot.bot:
+        return jsonify({"code": 1, "message": "bot is not running"})
+
+    chat_link = request.form.get("chat_link", "").strip()
+    start_id = _safe_int(request.form.get("start_id", "1"), 1)
+    end_id = _safe_int(request.form.get("end_id", "0"), 0)
+    download_filter = request.form.get("download_filter", "").strip()
+
+    if not chat_link:
+        return jsonify({"code": 1, "message": "chat_link is required"})
+
+    cmd = f"/download {chat_link} {start_id} {end_id}"
+    if download_filter:
+        cmd += f" {download_filter}"
+
+    async def _submit():
+        from types import SimpleNamespace
+        from module.bot import download_from_bot  # pylint: disable=C0415
+
+        user_id = bot.allowed_user_ids[0] if bot.allowed_user_ids else 0
+        user = SimpleNamespace(id=user_id)
+        fake_message = SimpleNamespace(
+            text=cmd,
+            from_user=user,
+            id=0,
+            chat=SimpleNamespace(id=user.id),
+        )
+        await download_from_bot(bot.bot, fake_message)
+
+    bot.app.loop.call_soon_threadsafe(lambda: bot.app.loop.create_task(_submit()))
+    return jsonify({"code": 0, "message": "submitted"})
+
+
+@_flask_app.route("/bot/forward", methods=["POST"])
+@login_required
+def bot_forward_task():
+    """Create forward task from web"""
+    bot = _get_bot_instance()
+    if not bot.bot:
+        return jsonify({"code": 1, "message": "bot is not running"})
+
+    src_link = request.form.get("src_link", "").strip()
+    dst_link = request.form.get("dst_link", "").strip()
+    start_id = _safe_int(request.form.get("start_id", "1"), 1)
+    end_id = _safe_int(request.form.get("end_id", "0"), 0)
+    download_filter = request.form.get("download_filter", "").strip()
+
+    if not src_link or not dst_link:
+        return jsonify({"code": 1, "message": "src_link and dst_link are required"})
+
+    cmd = f"/forward {src_link} {dst_link} {start_id} {end_id}"
+    if download_filter:
+        cmd += f" {download_filter}"
+
+    async def _submit():
+        from types import SimpleNamespace
+        from module.bot import forward_messages  # pylint: disable=C0415
+
+        user_id = bot.allowed_user_ids[0] if bot.allowed_user_ids else 0
+        user = SimpleNamespace(id=user_id)
+        fake_message = SimpleNamespace(
+            text=cmd,
+            from_user=user,
+            id=0,
+            chat=SimpleNamespace(id=user.id),
+        )
+        await forward_messages(bot.bot, fake_message)
+
+    bot.app.loop.call_soon_threadsafe(lambda: bot.app.loop.create_task(_submit()))
+    return jsonify({"code": 0, "message": "submitted"})
