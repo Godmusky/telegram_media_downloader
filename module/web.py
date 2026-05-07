@@ -2,10 +2,11 @@
 
 import logging
 import os
+import secrets
 import threading
 from typing import List
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, session
 from flask_login import LoginManager, UserMixin, login_required, login_user
 
 import utils
@@ -25,12 +26,72 @@ log.setLevel(logging.ERROR)
 
 _flask_app = Flask(__name__)
 
-_flask_app.secret_key = "tdl"
+_flask_app.secret_key = os.environ.get("TMD_WEB_FLASK_SECRET", secrets.token_hex(32))
+_flask_app.config["SESSION_COOKIE_HTTPONLY"] = True
+_flask_app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 _login_manager = LoginManager()
 _login_manager.login_view = "login"
 _login_manager.init_app(_flask_app)
 web_login_users: dict = {}
-deAesCrypt = AesBase64("1234123412ABCDEF", "ABCDEF1234123412")
+_aes_key = os.environ.get("TMD_WEB_AES_KEY") or secrets.token_hex(8)
+_aes_iv = os.environ.get("TMD_WEB_AES_IV") or secrets.token_hex(8)
+deAesCrypt = AesBase64(
+    _aes_key,
+    _aes_iv,
+)
+
+
+class ApiCode:
+    """Web API error code"""
+
+    OK = 0
+    INVALID_PARAM = 40001
+    UNAUTHORIZED = 40101
+    FORBIDDEN = 40301
+    INVALID_CSRF = 40302
+    BOT_NOT_RUNNING = 50301
+    INTERNAL_ERROR = 50001
+
+
+def _api_ok(data=None, message: str = "ok", http_status: int = 200):
+    payload = {"code": ApiCode.OK, "message": message}
+    if data is not None:
+        payload["data"] = data
+    return jsonify(payload), http_status
+
+
+def _api_error(code: int, message: str, http_status: int):
+    return jsonify({"code": code, "message": message}), http_status
+
+
+def _issue_csrf_token() -> str:
+    token = session.get("csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(24)
+        session["csrf_token"] = token
+    return token
+
+
+def _validate_csrf() -> bool:
+    form_token = request.form.get("csrf_token", "")
+    header_token = request.headers.get("X-CSRF-Token", "")
+    token = form_token or header_token
+    return bool(token) and token == session.get("csrf_token")
+
+
+def _require_csrf():
+    if not _validate_csrf():
+        return _api_error(ApiCode.INVALID_CSRF, "invalid csrf token", 403)
+    return None
+
+
+def _require_bot_ready():
+    bot = _get_bot_instance()
+    if not bot.bot:
+        return None, _api_error(ApiCode.BOT_NOT_RUNNING, "bot is not running", 503)
+    if not bot.allowed_user_ids:
+        return None, _api_error(ApiCode.FORBIDDEN, "no allowed user configured", 403)
+    return bot, None
 
 
 class User(UserMixin):
@@ -160,17 +221,21 @@ def login():
             web_login_form[key] = value
 
         if not web_login_form.get("password"):
-            return jsonify({"code": "0"})
+            return _api_error(ApiCode.INVALID_PARAM, "password is required", 400)
 
         password = web_login_form["password"]
         if username in web_login_users and web_login_users[username] == password:
             user = User()
             login_user(user)
-            return jsonify({"code": "1"})
+            return _api_ok(message="login success")
 
-        return jsonify({"code": "0"})
+        return _api_error(ApiCode.UNAUTHORIZED, "invalid credentials", 401)
 
-    return render_template("login.html")
+    return render_template(
+        "login.html",
+        aes_key=_aes_key,
+        aes_iv=_aes_iv,
+    )
 
 
 @_flask_app.route("/")
@@ -182,6 +247,7 @@ def index():
         download_state=(
             "pause" if get_download_state() is DownloadState.Downloading else "continue"
         ),
+        csrf_token=_issue_csrf_token(),
     )
 
 
@@ -189,10 +255,11 @@ def index():
 @login_required
 def get_download_speed():
     """Get download speed"""
-    return (
-        '{ "download_speed" : "'
-        + format_byte(get_total_download_speed())
-        + '/s" , "upload_speed" : "0.00 B/s" } '
+    return jsonify(
+        {
+            "download_speed": f"{format_byte(get_total_download_speed())}/s",
+            "upload_speed": "0.00 B/s",
+        }
     )
 
 
@@ -200,17 +267,21 @@ def get_download_speed():
 @login_required
 def web_set_download_state():
     """Set download state"""
+    csrf_err = _require_csrf()
+    if csrf_err:
+        return csrf_err
+
     state = request.args.get("state")
 
     if state == "continue" and get_download_state() is DownloadState.StopDownload:
         set_download_state(DownloadState.Downloading)
-        return "pause"
+        return _api_ok({"state": "pause"})
 
     if state == "pause" and get_download_state() is DownloadState.Downloading:
         set_download_state(DownloadState.StopDownload)
-        return "continue"
+        return _api_ok({"state": "continue"})
 
-    return state
+    return _api_ok({"state": state})
 
 
 @_flask_app.route("/get_app_version")
@@ -224,12 +295,12 @@ def get_app_version():
 def get_download_list():
     """get download list"""
     if request.args.get("already_down") is None:
-        return "[]"
+        return jsonify([])
 
     already_down = request.args.get("already_down") == "true"
 
     download_result = get_download_result()
-    result = "["
+    result = []
     for chat_id, messages in list(download_result.items()):
         for idx, value in list(messages.items()):
             is_already_down = value["down_byte"] == value["total_size"]
@@ -237,57 +308,60 @@ def get_download_list():
             if already_down and not is_already_down:
                 continue
 
-            if result != "[":
-                result += ","
             download_speed = format_byte(value["download_speed"]) + "/s"
-            result += (
-                '{ "chat":"'
-                + f"{chat_id}"
-                + '", "id":"'
-                + f"{idx}"
-                + '", "filename":"'
-                + os.path.basename(value["file_name"])
-                + '", "total_size":"'
-                + f'{format_byte(value["total_size"])}'
-                + '" ,"download_progress":"'
-            )
-            result += (
-                f'{round(value["down_byte"] / value["total_size"] * 100, 1)}'
-                + '" ,"download_speed":"'
-                + download_speed
-                + '" ,"save_path":"'
-                + value["file_name"].replace("\\", "/")
-                + '"}'
-            )
+            progress = 0.0
+            if value["total_size"] > 0:
+                progress = round(value["down_byte"] / value["total_size"] * 100, 1)
 
-    result += "]"
-    return result
+            result.append(
+                {
+                    "chat": f"{chat_id}",
+                    "id": f"{idx}",
+                    "filename": os.path.basename(value["file_name"]),
+                    "total_size": format_byte(value["total_size"]),
+                    "download_progress": progress,
+                    "download_speed": download_speed,
+                    "save_path": value["file_name"].replace("\\", "/"),
+                }
+            )
+    return jsonify(result)
 
 
 @_flask_app.route("/bot/tasks")
 @login_required
 def bot_tasks():
     """Get bot task list"""
-    return jsonify({"code": 0, "data": _build_task_list()})
+    return _api_ok(_build_task_list())
 
 
 @_flask_app.route("/bot/stop", methods=["POST"])
 @login_required
 def bot_stop_task():
     """Stop bot task"""
+    csrf_err = _require_csrf()
+    if csrf_err:
+        return csrf_err
+
     task_id = request.args.get("task_id", "all")
+    if not task_id:
+        return _api_error(ApiCode.INVALID_PARAM, "task_id is required", 400)
+
     bot = _get_bot_instance()
     bot.stop_task(task_id)
-    return jsonify({"code": 0, "message": "ok"})
+    return _api_ok(message="stopped")
 
 
 @_flask_app.route("/bot/download", methods=["POST"])
 @login_required
 def bot_download_task():
     """Create download task from web"""
-    bot = _get_bot_instance()
-    if not bot.bot:
-        return jsonify({"code": 1, "message": "bot is not running"})
+    csrf_err = _require_csrf()
+    if csrf_err:
+        return csrf_err
+
+    bot, bot_err = _require_bot_ready()
+    if bot_err:
+        return bot_err
 
     chat_link = request.form.get("chat_link", "").strip()
     start_id = _safe_int(request.form.get("start_id", "1"), 1)
@@ -295,7 +369,7 @@ def bot_download_task():
     download_filter = request.form.get("download_filter", "").strip()
 
     if not chat_link:
-        return jsonify({"code": 1, "message": "chat_link is required"})
+        return _api_error(ApiCode.INVALID_PARAM, "chat_link is required", 400)
 
     cmd = f"/download {chat_link} {start_id} {end_id}"
     if download_filter:
@@ -316,16 +390,20 @@ def bot_download_task():
         await download_from_bot(bot.bot, fake_message)
 
     bot.app.loop.call_soon_threadsafe(lambda: bot.app.loop.create_task(_submit()))
-    return jsonify({"code": 0, "message": "submitted"})
+    return _api_ok(message="submitted")
 
 
 @_flask_app.route("/bot/forward", methods=["POST"])
 @login_required
 def bot_forward_task():
     """Create forward task from web"""
-    bot = _get_bot_instance()
-    if not bot.bot:
-        return jsonify({"code": 1, "message": "bot is not running"})
+    csrf_err = _require_csrf()
+    if csrf_err:
+        return csrf_err
+
+    bot, bot_err = _require_bot_ready()
+    if bot_err:
+        return bot_err
 
     src_link = request.form.get("src_link", "").strip()
     dst_link = request.form.get("dst_link", "").strip()
@@ -334,7 +412,9 @@ def bot_forward_task():
     download_filter = request.form.get("download_filter", "").strip()
 
     if not src_link or not dst_link:
-        return jsonify({"code": 1, "message": "src_link and dst_link are required"})
+        return _api_error(
+            ApiCode.INVALID_PARAM, "src_link and dst_link are required", 400
+        )
 
     cmd = f"/forward {src_link} {dst_link} {start_id} {end_id}"
     if download_filter:
@@ -355,4 +435,4 @@ def bot_forward_task():
         await forward_messages(bot.bot, fake_message)
 
     bot.app.loop.call_soon_threadsafe(lambda: bot.app.loop.create_task(_submit()))
-    return jsonify({"code": 0, "message": "submitted"})
+    return _api_ok(message="submitted")
