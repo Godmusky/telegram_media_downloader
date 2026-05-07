@@ -59,9 +59,14 @@ class CloudDrive:
     @staticmethod
     def rclone_mkdir(drive_config: CloudDriveConfig, remote_dir: str):
         """mkdir in remote"""
+        rclone_path = os.path.abspath(drive_config.rclone_path)
+        if not os.path.isfile(rclone_path):
+            raise FileNotFoundError(f"rclone not found: {rclone_path}")
+
+        cmd = [rclone_path, "mkdir", f"{remote_dir}/"]
         with Popen(
-            f'"{drive_config.rclone_path}" mkdir "{remote_dir}/"',
-            shell=True,
+            cmd,
+            shell=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
         ):
@@ -118,12 +123,23 @@ class CloudDrive:
             else:
                 file_path = local_file_path
 
-            cmd = (
-                f'"{drive_config.rclone_path}" copy "{file_path}" '
-                f'"{remote_dir}/" --create-empty-src-dirs --ignore-existing --progress'
-            )
-            proc = await asyncio.create_subprocess_shell(
-                cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+            rclone_path = os.path.abspath(drive_config.rclone_path)
+            if not os.path.isfile(rclone_path):
+                raise FileNotFoundError(f"rclone not found: {rclone_path}")
+
+            cmd = [
+                rclone_path,
+                "copy",
+                file_path,
+                f"{remote_dir}/",
+                "--create-empty-src-dirs",
+                "--ignore-existing",
+                "--progress",
+            ]
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
             )
             if proc.stdout:
                 async for output in proc.stdout:

@@ -99,8 +99,39 @@
       var element = layui.element;
       var layer = layui.layer;
       var $ = layui.$;
+      var csrfToken = '{{ csrf_token }}';
       var already_download_list_data = new Array()
       var download_list_table_data = new Array()
+      var pollErrorStat = {
+        downloadList: { lastToastAt: 0 },
+        alreadyDownloadList: { lastToastAt: 0 }
+      }
+      var POLL_ERROR_TOAST_COOLDOWN_MS = 10000
+
+      function showApiError(res, fallback) {
+        var msg = fallback || 'request failed'
+        if (res && res.message) {
+          msg = res.message
+        }
+        layer.msg(msg)
+      }
+
+      function showPollErrorWithCooldown(key, res, fallback) {
+        var stat = pollErrorStat[key]
+        if (!stat) {
+          showApiError(res, fallback)
+          return
+        }
+        var now = Date.now()
+        if (now - stat.lastToastAt >= POLL_ERROR_TOAST_COOLDOWN_MS) {
+          stat.lastToastAt = now
+          showApiError(res, fallback)
+        }
+      }
+
+      function isApiOk(res) {
+        return !!res && res.code === 0
+      }
 
       $.ajax({
         url: "get_app_version"
@@ -116,11 +147,21 @@
         $.ajax({
         url: "set_download_state?state=" + e.dataset.value
         , type: "post"
+        , data: { csrf_token: csrfToken }
         , async: false
-        , dataType: "text"
+        , dataType: "json"
         , success: function (result) {
-          $("#download_state").html(result)
-          e.dataset.value=result
+          if (!isApiOk(result)) {
+            showApiError(result, 'failed to update download state')
+            return
+          }
+          var payload = result.data || {}
+          var nextState = payload.state || e.dataset.value
+          $("#download_state").html(nextState)
+          e.dataset.value = nextState
+        }
+        , error: function () {
+          showApiError(null, 'failed to update download state')
         }
       });
     }
@@ -199,39 +240,55 @@
 
       submit_bot_download = function() {
         $.post('bot/download', {
+          csrf_token: csrfToken,
           chat_link: $('#bot_download_chat_link').val(),
           start_id: $('#bot_download_start').val(),
           end_id: $('#bot_download_end').val(),
           download_filter: $('#bot_download_filter').val()
         }, function(res){
-          layer.msg(res.message || 'submitted')
+          if (isApiOk(res)) {
+            layer.msg(res.message || 'submitted')
+            return
+          }
+          showApiError(res, 'submit download failed')
         }, 'json')
       }
 
       submit_bot_forward = function() {
         $.post('bot/forward', {
+          csrf_token: csrfToken,
           src_link: $('#bot_forward_src_link').val(),
           dst_link: $('#bot_forward_dst_link').val(),
           start_id: $('#bot_forward_start').val(),
           end_id: $('#bot_forward_end').val(),
           download_filter: $('#bot_forward_filter').val()
         }, function(res){
-          layer.msg(res.message || 'submitted')
+          if (isApiOk(res)) {
+            layer.msg(res.message || 'submitted')
+            return
+          }
+          showApiError(res, 'submit forward failed')
         }, 'json')
       }
 
       stop_bot_task = function(task_id) {
-        $.post('bot/stop?task_id=' + task_id, function(){
-          layer.msg('stopped')
-          update_bot_tasks()
+        $.post('bot/stop?task_id=' + task_id, { csrf_token: csrfToken }, function(res){
+          if (isApiOk(res)) {
+            layer.msg(res.message || 'stopped')
+            update_bot_tasks()
+            return
+          }
+          showApiError(res, 'stop task failed')
         })
       }
 
       function update_bot_tasks() {
         $.get('bot/tasks', function(res){
-          if (res.code === 0) {
+          if (isApiOk(res)) {
             table.reload('bot_task_list', { data: res.data || [] })
+            return
           }
+          showApiError(res, 'load bot task list failed')
         }, 'json')
       }
 
@@ -242,6 +299,14 @@
           , async: false
           , dataType: "json"
           , success: function (result) {
+            if (!Array.isArray(result)) {
+              if (!isApiOk(result)) {
+                showPollErrorWithCooldown('downloadList', result, 'load downloading list failed')
+                return
+              }
+              showPollErrorWithCooldown('downloadList', null, 'unexpected download list response')
+              return
+            }
             // first remove finish and update
             for (var j = 0, len2 = download_list_table_data.length; j < len2; j++) {
               find_iter = false
@@ -304,6 +369,9 @@
 
             element.render()
           }
+          , error: function () {
+            showPollErrorWithCooldown('downloadList', null, 'load downloading list failed')
+          }
         });
 
       };
@@ -336,6 +404,14 @@
           , async: false
           , dataType: "json"
           , success: function (result) {
+            if (!Array.isArray(result)) {
+              if (!isApiOk(result)) {
+                showPollErrorWithCooldown('alreadyDownloadList', result, 'load downloaded list failed')
+                return
+              }
+              showPollErrorWithCooldown('alreadyDownloadList', null, 'unexpected downloaded list response')
+              return
+            }
             // if not exist then add
             for (var i = 0, len = result.length; i < len; i++) {
               if (result[i].download_progress != 100) {
@@ -373,6 +449,9 @@
             }
 
             element.render()
+          }
+          , error: function () {
+            showPollErrorWithCooldown('alreadyDownloadList', null, 'load downloaded list failed')
           }
         });
 
