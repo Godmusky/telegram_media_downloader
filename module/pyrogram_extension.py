@@ -52,6 +52,9 @@ _mimetypes = MimeTypes()
 _mimetypes.readfp(StringIO(mime_types))
 _download_cache = Cache(1024 * 1024 * 1024)
 
+MAX_STATUS_MESSAGE_LENGTH = 3500
+MAX_PROGRESS_ITEMS_PER_SECTION = 8
+
 
 def reset_download_cache():
     """Reset download cache"""
@@ -1096,9 +1099,14 @@ async def _report_bot_status(
                 f"└─ ✅ {_t('Success')}: {node.upload_success_count}\n"
             )
 
+        cloud_items = 0
         for idx, value in node.cloud_drive_upload_stat_dict.items():
             if value.transferred == value.total:
                 continue
+            if cloud_items >= MAX_PROGRESS_ITEMS_PER_SECTION:
+                upload_msg_detail_str += f" └─ ... {_t('More tasks omitted')}\n"
+                break
+            cloud_items += 1
 
             temp_file_name = truncate_filename(os.path.basename(value.file_name), 10)
             upload_msg_detail_str += (
@@ -1115,10 +1123,15 @@ async def _report_bot_status(
         download_result = get_download_result()
         if node.chat_id in download_result:
             messages = download_result[node.chat_id]
+            download_items = 0
             for idx, value in messages.items():
                 task_id = value["task_id"]
                 if task_id != node.task_id or value["down_byte"] == value["total_size"]:
                     continue
+                if download_items >= MAX_PROGRESS_ITEMS_PER_SECTION:
+                    download_result_str += f" └─ ... {_t('More tasks omitted')}\n"
+                    break
+                download_items += 1
 
                 temp_file_name = truncate_filename(
                     os.path.basename(value["file_name"]), 10
@@ -1139,9 +1152,14 @@ async def _report_bot_status(
                 )
 
         upload_result_str = ""
+        upload_items = 0
         for idx, value in node.upload_stat_dict.items():
             if value.total_size == value.upload_size:
                 continue
+            if upload_items >= MAX_PROGRESS_ITEMS_PER_SECTION:
+                upload_result_str += f" └─ ... {_t('More tasks omitted')}\n"
+                break
+            upload_items += 1
 
             temp_file_name = truncate_filename(os.path.basename(value.file_name), 10)
             progress = int(value.upload_size / value.total_size * 100)
@@ -1170,6 +1188,28 @@ async def _report_bot_status(
             f"{upload_result_str}"
             f"{download_result_str}\n`"
         )
+
+        if len(new_msg_str) > MAX_STATUS_MESSAGE_LENGTH:
+            compact_download = (
+                f"\n📥 {_t('Download Progresses')}: "
+                f"{node.success_download_task}/{node.total_download_task}\n"
+            )
+            compact_upload = ""
+            if node.upload_telegram_chat_id:
+                compact_upload = (
+                    f"📤 {_t('Upload Progresses')}: "
+                    f"{node.upload_success_count}\n"
+                )
+            new_msg_str = (
+                f"`\n"
+                f"🆔 task id: {node.task_id}\n"
+                f"📥 {_t('Downloading')}: {format_byte(node.total_download_byte)}\n"
+                f"├─ 📁 {_t('Total')}: {node.total_download_task}\n"
+                f"├─ ✅ {_t('Success')}: {node.success_download_task}\n"
+                f"├─ ❌ {_t('Failed')}: {node.failed_download_task}\n"
+                f"└─ ⏩ {_t('Skipped')}: {node.skip_download_task}\n"
+                f"{compact_download}{compact_upload}`"
+            )
 
         if new_msg_str != node.last_edit_msg:
             node.last_edit_msg = new_msg_str

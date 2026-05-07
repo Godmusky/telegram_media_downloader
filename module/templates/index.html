@@ -20,7 +20,7 @@
       <ul class="layui-tab-title">
         <li class="layui-this">Downloading</li>
         <li>Downloaded</li>
-        <!-- <li>Config</li> -->
+        <li>Bot</li>
       </ul>
       <div class="stop-btn" id="download_state" data-value="{{ download_state }}" onclick="download_state_change(this)"> {{ download_state }} </div>
     </div>
@@ -31,11 +31,40 @@
       <div class="layui-tab-item">
         <table class="layui-hide" id="already_download_list" lay-filter="already_download_list"></table>
       </div>
-      <!-- <div class="layui-tab-item">
-        <form class="layui-form" action="">
-        under development
-      </form>
-      </div> -->
+      <div class="layui-tab-item" style="padding: 12px 0;">
+        <div class="layui-row layui-col-space12">
+          <div class="layui-col-md6">
+            <fieldset class="layui-elem-field">
+              <legend>Bot Download</legend>
+              <div class="layui-field-box">
+                <input id="bot_download_chat_link" class="layui-input" placeholder="chat link" style="margin-bottom:8px;">
+                <div class="layui-row layui-col-space8" style="margin-bottom:8px;">
+                  <div class="layui-col-xs6"><input id="bot_download_start" class="layui-input" placeholder="start id" value="1"></div>
+                  <div class="layui-col-xs6"><input id="bot_download_end" class="layui-input" placeholder="end id" value="0"></div>
+                </div>
+                <input id="bot_download_filter" class="layui-input" placeholder="optional filter" style="margin-bottom:8px;">
+                <button class="layui-btn layui-btn-sm" onclick="submit_bot_download()">Submit Download</button>
+              </div>
+            </fieldset>
+          </div>
+          <div class="layui-col-md6">
+            <fieldset class="layui-elem-field">
+              <legend>Bot Forward</legend>
+              <div class="layui-field-box">
+                <input id="bot_forward_src_link" class="layui-input" placeholder="src link" style="margin-bottom:8px;">
+                <input id="bot_forward_dst_link" class="layui-input" placeholder="dst link" style="margin-bottom:8px;">
+                <div class="layui-row layui-col-space8" style="margin-bottom:8px;">
+                  <div class="layui-col-xs6"><input id="bot_forward_start" class="layui-input" placeholder="start id" value="1"></div>
+                  <div class="layui-col-xs6"><input id="bot_forward_end" class="layui-input" placeholder="end id" value="0"></div>
+                </div>
+                <input id="bot_forward_filter" class="layui-input" placeholder="optional filter" style="margin-bottom:8px;">
+                <button class="layui-btn layui-btn-normal layui-btn-sm" onclick="submit_bot_forward()">Submit Forward</button>
+              </div>
+            </fieldset>
+          </div>
+        </div>
+        <table class="layui-hide" id="bot_task_list" lay-filter="bot_task_list"></table>
+      </div>
     </div>
   </div>
 
@@ -145,6 +174,67 @@
         }
       });
 
+      table.render({
+        elem: '#bot_task_list'
+        , id: 'bot_task_list'
+        , data: []
+        , title: 'bot_task_list'
+        , height: 320
+        , cols: [[
+          { field: 'task_id', title: 'task id', width: 100 }
+          , { field: 'task_type', title: 'type', width: 130 }
+          , { field: 'chat_id', title: 'chat', width: 180 }
+          , { field: 'running', title: 'running', width: 100 }
+          , { field: 'total', title: 'total', width: 80 }
+          , { field: 'success', title: 'success', width: 80 }
+          , { field: 'failed', title: 'failed', width: 80 }
+          , { field: 'skipped', title: 'skipped', width: 80 }
+          , {
+            title: 'action', width: 120, templet: function (d) {
+              return '<button class="layui-btn layui-btn-danger layui-btn-xs" onclick="stop_bot_task(\'' + d.task_id + '\')">Stop</button>'
+            }
+          }
+        ]]
+      });
+
+      submit_bot_download = function() {
+        $.post('bot/download', {
+          chat_link: $('#bot_download_chat_link').val(),
+          start_id: $('#bot_download_start').val(),
+          end_id: $('#bot_download_end').val(),
+          download_filter: $('#bot_download_filter').val()
+        }, function(res){
+          layer.msg(res.message || 'submitted')
+        }, 'json')
+      }
+
+      submit_bot_forward = function() {
+        $.post('bot/forward', {
+          src_link: $('#bot_forward_src_link').val(),
+          dst_link: $('#bot_forward_dst_link').val(),
+          start_id: $('#bot_forward_start').val(),
+          end_id: $('#bot_forward_end').val(),
+          download_filter: $('#bot_forward_filter').val()
+        }, function(res){
+          layer.msg(res.message || 'submitted')
+        }, 'json')
+      }
+
+      stop_bot_task = function(task_id) {
+        $.post('bot/stop?task_id=' + task_id, function(){
+          layer.msg('stopped')
+          update_bot_tasks()
+        })
+      }
+
+      function update_bot_tasks() {
+        $.get('bot/tasks', function(res){
+          if (res.code === 0) {
+            table.reload('bot_task_list', { data: res.data || [] })
+          }
+        }, 'json')
+      }
+
       function update_download_list() {
         $.ajax({
           url: "get_download_list?already_down=false"
@@ -236,6 +326,7 @@
       var update_download_list_int = self.setInterval(update_download_list, 1000);
       var update_download_status_int = self.setInterval(update_download_status, 1000);
       var update_already_download_list_int = 0;
+      var update_bot_task_int = 0;
 
 
       function update_already_download_list() {
@@ -302,6 +393,15 @@
 
         if (data.index == 1) {
           update_already_download_list_int = self.setInterval(update_already_download_list, 1000);
+        }
+
+        if (data.index != 2) {
+          clearInterval(update_bot_task_int);
+        }
+
+        if (data.index == 2) {
+          update_bot_tasks();
+          update_bot_task_int = self.setInterval(update_bot_tasks, 2000);
         }
 
       });

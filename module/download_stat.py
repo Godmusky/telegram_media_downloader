@@ -2,6 +2,7 @@
 import asyncio
 import time
 from enum import Enum
+from typing import Dict, Tuple, Union
 
 from pyrogram import Client
 
@@ -20,6 +21,11 @@ _total_download_speed: int = 0
 _total_download_size: int = 0
 _last_download_time: float = time.time()
 _download_state: DownloadState = DownloadState.Downloading
+_last_cleanup_time: float = 0.0
+
+MAX_DOWNLOAD_RESULT_PER_CHAT = 2000
+MAX_DOWNLOAD_RESULT_TOTAL = 10000
+FINISHED_ITEM_TTL_SECONDS = 1800
 
 
 def get_download_result() -> dict:
@@ -42,6 +48,59 @@ def set_download_state(state: DownloadState):
     """set download state"""
     global _download_state
     _download_state = state
+
+
+def _iter_items_with_key():
+    for chat_id, messages in _download_result.items():
+        for message_id, value in messages.items():
+            yield chat_id, message_id, value
+
+
+def _cleanup_download_result(force: bool = False):
+    global _last_cleanup_time
+    now = time.time()
+    if not force and now - _last_cleanup_time < 5:
+        return
+
+    _last_cleanup_time = now
+
+    # 1) 优先清理过期的已完成任务
+    for chat_id, messages in list(_download_result.items()):
+        for message_id, value in list(messages.items()):
+            finished_time = value.get("finished_time")
+            if finished_time and now - finished_time > FINISHED_ITEM_TTL_SECONDS:
+                messages.pop(message_id, None)
+        if not messages:
+            _download_result.pop(chat_id, None)
+
+    # 2) 控制每个 chat 的最大记录数（按最近更新时间保留）
+    for chat_id, messages in list(_download_result.items()):
+        if len(messages) <= MAX_DOWNLOAD_RESULT_PER_CHAT:
+            continue
+        sorted_items = sorted(
+            messages.items(),
+            key=lambda item: item[1].get("end_time", 0),
+            reverse=True,
+        )
+        keep = dict(sorted_items[:MAX_DOWNLOAD_RESULT_PER_CHAT])
+        _download_result[chat_id] = keep
+
+    # 3) 控制全局最大记录数
+    all_items = list(_iter_items_with_key())
+    if len(all_items) <= MAX_DOWNLOAD_RESULT_TOTAL:
+        return
+
+    all_items.sort(key=lambda item: item[2].get("end_time", 0), reverse=True)
+    keep_keys: Dict[Tuple[Union[int, str], int], bool] = {}
+    for chat_id, message_id, _ in all_items[:MAX_DOWNLOAD_RESULT_TOTAL]:
+        keep_keys[(chat_id, message_id)] = True
+
+    for chat_id, messages in list(_download_result.items()):
+        for message_id in list(messages.keys()):
+            if (chat_id, message_id) not in keep_keys:
+                messages.pop(message_id, None)
+        if not messages:
+            _download_result.pop(chat_id, None)
 
 
 async def update_download_status(
@@ -120,3 +179,11 @@ async def update_download_status(
         _total_download_speed = max(_total_download_speed, 0)
         _total_download_size = 0
         _last_download_time = cur_time
+
+    # 标记完成时间，便于后续清理
+    if total_size > 0 and down_byte >= total_size:
+        item = _download_result.get(chat_id, {}).get(message_id)
+        if item is not None:
+            item["finished_time"] = cur_time
+
+    _cleanup_download_result()
