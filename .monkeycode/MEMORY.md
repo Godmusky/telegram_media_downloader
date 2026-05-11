@@ -39,6 +39,18 @@ Agent 在任务执行过程中发现的条目应遵循以下格式：
   - 修复大量下载消息时内存占用过多的问题
   - 将 bot 功能集成到 web，支持可视化操作
 
+[下载管理页面前端优化]
+- Date: 2026-05-11
+- Context: Agent 在优化大量下载时下载管理页面性能问题时发现
+- Category: 代码模式
+- Instructions:
+  - Web 端下载列表位于 `module/templates/index.html`，使用 Layui 表格组件
+  - 数据源使用 Map 而非 Array，以 `chat-id` 作为 key，查找时间复杂度 O(1)
+  - 正在下载列表：完成项（100%）从 DOM 移除时同步从 Map 中 delete
+  - 已下载列表：设置 500 条上限，超出时 FIFO 淘汰最旧条目
+  - 轮询机制：每秒调用 `/get_download_list` API 获取全量数据，前端增量更新 DOM
+  - 后端上限：`module/download_stat.py` 中定义全局最多 10000 条、每 chat 最多 2000 条、已完成项保留 30 分钟
+
 [任务执行偏好]
 - Date: 2026-05-07
 - Context: 用户在本次会话中要求我连续完成加固改造
