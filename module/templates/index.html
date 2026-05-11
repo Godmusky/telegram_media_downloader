@@ -100,8 +100,9 @@
       var layer = layui.layer;
       var $ = layui.$;
       var csrfToken = '{{ csrf_token }}';
-      var already_download_list_data = new Array()
-      var download_list_table_data = new Array()
+      var already_download_list_data = new Map()
+      var download_list_table_data = new Map()
+      var already_download_list_cap = 500
       var pollErrorStat = {
         downloadList: { lastToastAt: 0 },
         alreadyDownloadList: { lastToastAt: 0 }
@@ -307,64 +308,47 @@
               showPollErrorWithCooldown('downloadList', null, 'unexpected download list response')
               return
             }
-            // first remove finish and update
-            for (var j = 0, len2 = download_list_table_data.length; j < len2; j++) {
-              find_iter = false
-              for (var i = 0, len = result.length; i < len; i++) {
-                if (result[i].chat == download_list_table_data[j].chat && result[i].id == download_list_table_data[j].id) {
-                  download_list_table_data[j].download_progress = result[i].download_progress
-                  var progress = download_list_table_data[j].download_progress
-                  element.progress('down-' + result[i].chat + '-' + result[i].id, progress + '%');
 
-                  var download_speed_obj = $('div[lay-filter="down_speed-' + result[i].chat + '-' + result[i].id + '"]')
-                  download_speed_obj.html(result[i].download_speed)
+            var tbody = $('div[lay-id="download_list"]  .layui-table-body .layui-table tbody')
+            var currentKeys = new Set()
 
-                  if (progress == 100) {
-                    var device_obj = $('div[lay-filter="down-' + result[i].chat + '-' + result[i].id + '"] div')
-                    device_obj.removeClass("layui-bg-blue")
-                    device_obj.addClass("layui-bg-green")
-                    obj = $('div[lay-id="download_list"]  tr[data-index="' + result[i].chat + '-' + result[i].id + '"]')
-                    obj.remove()
-                  }
-                  find_iter = true
-                  break
-                }
-              }
-
-            }
-
-            // new task
             for (var i = 0, len = result.length; i < len; i++) {
-              find_iter = false
-              for (var j = 0, len2 = download_list_table_data.length; j < len2; j++) {
-                if (result[i].chat == download_list_table_data[j].chat && result[i].id == download_list_table_data[j].id) {
-                  find_iter = true
-                  break
+              var key = result[i].chat + '-' + result[i].id
+              currentKeys.add(key)
+
+              if (download_list_table_data.has(key)) {
+                var existing = download_list_table_data.get(key)
+                existing.download_progress = result[i].download_progress
+                var progress = existing.download_progress
+                element.progress('down-' + result[i].chat + '-' + result[i].id, progress + '%')
+
+                var download_speed_obj = $('div[lay-filter="down_speed-' + result[i].chat + '-' + result[i].id + '"]')
+                download_speed_obj.html(result[i].download_speed)
+
+                if (progress == 100) {
+                  var device_obj = $('div[lay-filter="down-' + result[i].chat + '-' + result[i].id + '"] div')
+                  device_obj.removeClass("layui-bg-blue")
+                  device_obj.addClass("layui-bg-green")
+                  var row = $('div[lay-id="download_list"]  tr[data-index="' + key + '"]')
+                  row.remove()
+                  download_list_table_data.delete(key)
+                }
+              } else if (result[i].download_progress != 100) {
+                var tr = ' <tr data-index="' + key + '">' +
+                  '<td data-field="id" data-key="1-0-0" class=""><div class="layui-table-cell laytable-cell-1-0-0">' + result[i].chat + '</div></td>' +
+                  '<td data-field="id" data-key="1-0-1" class=""><div class="layui-table-cell laytable-cell-1-0-1">' + result[i].id + '</div></td>' +
+                  '<td data-field="filename" data-key="1-0-2" class=""><div class="layui-table-cell laytable-cell-1-0-2" align="center">' + result[i].filename + '</div></td>' +
+                  '<td data-field="total_size" data-key="1-0-3" class=""><div class="layui-table-cell laytable-cell-1-0-3" align="center">' + result[i].total_size + '</div></td>' +
+                  '<td data-field="download_progress" data-key="1-0-4" data-content="' + result[i].download_progress + '" class=""><div class="layui-table-cell laytable-cell-1-0-4" align="center"><div class="layui-progress layui-progress-big" lay-showpercent="true" lay-filter="down-' + key + '"><div class="layui-progress-bar layui-bg-blue" lay-percent="' + result[i].download_progress + '%" style="width: ' + result[i].download_progress + '%;"><span class="layui-progress-text">' + result[i].download_progress + '%</span></div></div></div></td>' +
+                  '<td data-field="download_speed" data-key="1-0-5" class=""><div class="layui-table-cell laytable-cell-1-0-5" align="center" lay-filter="down_speed-' + key + '">' + result[i].download_speed + '</div></td>' +
+                  "  </tr>"
+                tbody.append(tr)
+                download_list_table_data.set(key, result[i])
+
+                if (download_list_table_data.size == 1) {
+                  $(".layui-none").remove()
                 }
               }
-
-              if (find_iter || result[i].download_progress == 100) {
-                continue;
-              }
-              // not found
-              obj = $('div[lay-id="download_list"]  .layui-table-body .layui-table tbody')
-              var tr = ' <tr data-index="' + result[i].chat + '-' + result[i].id + '">' +
-                '<td data-field="id" data-key="1-0-0" class=""><div class="layui-table-cell laytable-cell-1-0-0">' + result[i].chat + '</div></td>' +
-                '<td data-field="id" data-key="1-0-1" class=""><div class="layui-table-cell laytable-cell-1-0-1">' + result[i].id + '</div></td>' +
-                '<td data-field="filename" data-key="1-0-2" class=""><div class="layui-table-cell laytable-cell-1-0-2" align="center">' + result[i].filename + '</div></td>' +
-                '<td data-field="total_size" data-key="1-0-3" class=""><div class="layui-table-cell laytable-cell-1-0-3" align="center">' + result[i].total_size + '</div></td>' +
-                '<td data-field="download_progress" data-key="1-0-4" data-content="' + result[i].download_progress + '" class=""><div class="layui-table-cell laytable-cell-1-0-4" align="center"><div class="layui-progress layui-progress-big" lay-showpercent="true" lay-filter="down-' + result[i].chat + '-' + result[i].id + '"><div class="layui-progress-bar layui-bg-blue" lay-percent="' + result[i].download_progress + '%" style="width: ' + result[i].download_progress + '%;"><span class="layui-progress-text">' + result[i].download_progress + '%</span></div></div></div></td>' +
-                '<td data-field="download_speed" data-key="1-0-5" class=""><div class="layui-table-cell laytable-cell-1-0-5" align="center"lay-filter="down_speed-' + result[i].chat + '-' + result[i].id + '">' + result[i].download_speed + '</div></td>' +
-                "  </tr>";
-              obj.append(tr)
-              download_list_table_data.push(result[i])
-
-              if (download_list_table_data.length == 1) {
-                $(".layui-none").remove()
-              }
-
-              element.render()
-
             }
 
             element.render()
@@ -372,9 +356,8 @@
           , error: function () {
             showPollErrorWithCooldown('downloadList', null, 'load downloading list failed')
           }
-        });
-
-      };
+        })
+      }
 
 
       function update_download_status() {
@@ -412,40 +395,39 @@
               showPollErrorWithCooldown('alreadyDownloadList', null, 'unexpected downloaded list response')
               return
             }
-            // if not exist then add
+
+            var tbody = $('div[lay-id="already_download_list"]  .layui-table-body .layui-table tbody')
+
             for (var i = 0, len = result.length; i < len; i++) {
               if (result[i].download_progress != 100) {
                 continue
               }
 
-              find_iter = false
+              var key = result[i].chat + '-' + result[i].id
 
-              for (var j = 0, len2 = already_download_list_data.length; j < len2; j++) {
-                if (result[i].chat == download_list_table_data[i].chat && result[i].id == already_download_list_data[j].id) {
-                  find_iter = true
-                  break
-                }
+              if (already_download_list_data.has(key)) {
+                continue
               }
 
-              if (find_iter) {
-                continue;
+              if (already_download_list_data.size >= already_download_list_cap) {
+                var oldestKey = already_download_list_data.keys().next().value
+                var oldRow = $('div[lay-id="already_download_list"]  tr[data-index="' + oldestKey + '"]')
+                oldRow.remove()
+                already_download_list_data.delete(oldestKey)
               }
-              // not found
-              obj = $('div[lay-id="already_download_list"]  .layui-table-body .layui-table tbody')
-              var tr = ' <tr data-index="' + result[i].chat + '-' + result[i].id + '">' +
+
+              var tr = ' <tr data-index="' + key + '">' +
                 '<td data-field="id" data-key="2-0-0" class=""><div class="layui-table-cell laytable-cell-2-0-0">' + result[i].id + '</div></td>' +
                 '<td data-field="filename" data-key="2-0-1" class=""><div class="layui-table-cell laytable-cell-2-0-1" align="center">' + result[i].filename + '</div></td>' +
                 '<td data-field="total_size" data-key="2-0-2" class=""><div class="layui-table-cell laytable-cell-2-0-2" align="center">' + result[i].total_size + '</div></td>' +
                 '<td data-field="save_path" data-key="2-0-3" class=""><div class="layui-table-cell laytable-cell-2-0-3" align="center">' + result[i].save_path + '</div></td>' +
-                "  </tr>";
-              obj.append(tr)
+                "  </tr>"
+              tbody.append(tr)
+              already_download_list_data.set(key, result[i])
 
-              already_download_list_data.push(result[i])
-
-              if (already_download_list_data.length == 1) {
+              if (already_download_list_data.size == 1) {
                 $(".layui-none").remove()
               }
-              element.render()
             }
 
             element.render()
@@ -453,9 +435,8 @@
           , error: function () {
             showPollErrorWithCooldown('alreadyDownloadList', null, 'load downloaded list failed')
           }
-        });
-
-      };
+        })
+      }
 
       element.on('tab(telegram_media_downloader)', function (data) {
         if (data.index != 0) {
